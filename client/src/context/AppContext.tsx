@@ -25,7 +25,8 @@ const INITIAL_STATE: AppState = {
   currentClothes: CLOTHES_LIST[0],
   clothesList: CLOTHES_LIST,
   lastKeypoints: null,
-  isProcessing: false
+  isProcessing: false,
+  cameraError: null
 };
 
 type Action =
@@ -33,7 +34,8 @@ type Action =
   | { type: 'SET_CONNECTED'; payload: boolean }
   | { type: 'SET_CURRENT_CLOTHES'; payload: ClothesItem }
   | { type: 'SET_KEYPOINTS'; payload: PoseKeypoints | null }
-  | { type: 'SET_PROCESSING'; payload: boolean };
+  | { type: 'SET_PROCESSING'; payload: boolean }
+  | { type: 'SET_CAMERA_ERROR'; payload: string | null };
 
 function appReducer(state: AppState, action: Action): AppState {
   switch (action.type) {
@@ -47,6 +49,8 @@ function appReducer(state: AppState, action: Action): AppState {
       return { ...state, lastKeypoints: action.payload };
     case 'SET_PROCESSING':
       return { ...state, isProcessing: action.payload };
+    case 'SET_CAMERA_ERROR':
+      return { ...state, cameraError: action.payload };
     default:
       return state;
   }
@@ -58,6 +62,7 @@ interface AppContextType extends AppState {
   setCurrentClothes: (clothes: ClothesItem) => void;
   setKeypoints: (keypoints: PoseKeypoints | null) => void;
   setProcessing: (processing: boolean) => void;
+  setCameraError: (error: string | null) => void;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -89,13 +94,18 @@ export function AppProvider({ children }: AppProviderProps): JSX.Element {
     dispatch({ type: 'SET_PROCESSING', payload: processing });
   }, []);
 
+  const setCameraError = useCallback((error: string | null) => {
+    dispatch({ type: 'SET_CAMERA_ERROR', payload: error });
+  }, []);
+
   const value: AppContextType = {
     ...state,
     toggleCamera,
     setConnected,
     setCurrentClothes,
     setKeypoints,
-    setProcessing
+    setProcessing,
+    setCameraError
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

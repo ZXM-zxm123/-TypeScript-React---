@@ -5,7 +5,7 @@ import { ClothesSelector } from './components/ClothesSelector';
 import styles from './App.module.css';
 
 function MainApp(): JSX.Element {
-  const { isCameraActive, toggleCamera, isConnected, lastKeypoints } = useAppContext();
+  const { isCameraActive, toggleCamera, isConnected, lastKeypoints, cameraError } = useAppContext();
 
   return (
     <div className={styles.app}>
@@ -21,10 +21,12 @@ function MainApp(): JSX.Element {
           <div className={styles.statusItem}>
             <span
               className={`${styles.statusDot} ${
-                isCameraActive ? styles.statusDotActive : styles.statusDotInactive
+                cameraError ? styles.statusDotError : (isCameraActive ? styles.statusDotActive : styles.statusDotInactive)
               }`}
             />
-            <span>摄像头: {isCameraActive ? '已开启' : '已关闭'}</span>
+            <span>
+              {cameraError ? '摄像头错误' : (isCameraActive ? '已开启' : '已关闭')}
+            </span>
           </div>
           <div className={styles.statusItem}>
             <span
@@ -51,6 +53,7 @@ function MainApp(): JSX.Element {
             <button
               className={`${styles.button} ${styles.buttonPrimary}`}
               onClick={() => toggleCamera(true)}
+              disabled={!!cameraError}
             >
               <span>📷</span>
               开启摄像头
