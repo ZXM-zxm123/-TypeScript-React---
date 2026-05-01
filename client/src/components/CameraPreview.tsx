@@ -3,7 +3,6 @@ import { useAppContext } from '../context/AppContext';
 import { WebSocketClient } from '../utils/websocket';
 import { canvasToBlob, resizeImage, loadImage } from '../utils/image';
 import { calculateClothesTransform, drawClothes } from '../utils/render';
-import { PoseKeypoints } from '../types';
 import styles from './CameraPreview.module.css';
 
 const WS_URL = 'ws://localhost:8765';
@@ -11,19 +10,61 @@ const FRAME_INTERVAL = 100;
 const MAX_FRAME_WIDTH = 640;
 const MAX_FRAME_HEIGHT = 480;
 
-interface CameraPreviewProps {
-  // 组件属性
+type CameraErrorType = 'denied' | 'hardware' | 'in_use' | 'unknown';
+
+interface CameraErrorInfo {
+  type: CameraErrorType;
+  message: string;
+  suggestion: string;
 }
 
-export function CameraPreview(_props: CameraPreviewProps): JSX.Element {
+function getCameraErrorInfo(error: Error): CameraErrorInfo {
+  const errorName = error.name || error.constructor.name;
+  const errorMessage = error.message || String(error);
+
+  if (errorName === 'NotAllowedError' || errorName === 'PermissionDeniedError') {
+    return {
+      type: 'denied',
+      message: '摄像头权限被拒绝',
+      suggestion: '请在浏览器设置中允许访问摄像头，然后刷新页面重试'
+    };
+  }
+
+  if (errorName === 'NotFoundError' || errorName === 'DevicesNotFoundError') {
+    return {
+      type: 'hardware',
+      message: '未找到摄像头设备',
+      suggestion: '请确保设备已正确连接，然后刷新页面重试'
+    };
+  }
+
+  if (errorName === 'NotReadableError' || errorName === 'TrackStartError' || errorMessage.includes('in use')) {
+    return {
+      type: 'in_use',
+      message: '摄像头被其他应用占用',
+      suggestion: '请关闭其他正在使用摄像头的应用（如其他浏览器标签、视频通话软件等），然后重试'
+    };
+  }
+
+  return {
+    type: 'unknown',
+    message: `摄像头初始化失败: ${errorMessage}`,
+    suggestion: '请检查摄像头是否正常工作，或尝试刷新页面重试'
+  };
+}
+
+export function CameraPreview(): JSX.Element {
   const {
     isCameraActive,
     isConnected,
     setConnected,
     setKeypoints,
     setProcessing,
+    setCameraError,
+    toggleCamera,
     currentClothes,
-    lastKeypoints
+    lastKeypoints,
+    cameraError
   } = useAppContext();
 
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -77,32 +118,7 @@ export function CameraPreview(_props: CameraPreviewProps): JSX.Element {
     }
   }, [currentClothes]);
 
-  const startCamera = useCallback(async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          facingMode: 'user'
-        },
-        audio: false
-      });
-
-      streamRef.current = stream;
-
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-      }
-
-      initializeWebSocket();
-    } catch (error) {
-      console.error('Failed to start camera:', error);
-      alert('无法访问摄像头，请确保已授权摄像头权限。');
-    }
-  }, [initializeWebSocket]);
-
-  const stopCamera = useCallback(() => {
+  const cleanupCamera = useCallback(() => {
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
@@ -111,12 +127,16 @@ export function CameraPreview(_props: CameraPreviewProps): JSX.Element {
     if (videoRef.current) {
       videoRef.current.srcObject = null;
     }
+  }, []);
 
+  const cleanupWebSocket = useCallback(() => {
     if (wsClientRef.current) {
       wsClientRef.current.disconnect();
       wsClientRef.current = null;
     }
+  }, []);
 
+  const cleanupIntervals = useCallback(() => {
     if (frameIntervalRef.current) {
       clearInterval(frameIntervalRef.current);
       frameIntervalRef.current = null;
@@ -126,13 +146,82 @@ export function CameraPreview(_props: CameraPreviewProps): JSX.Element {
       cancelAnimationFrame(animationFrameRef.current);
       animationFrameRef.current = null;
     }
+  }, []);
 
+  const stopCamera = useCallback(() => {
+    cleanupCamera();
+    cleanupWebSocket();
+    cleanupIntervals();
+    setCameraError(null);
     setConnected(false);
     setKeypoints(null);
-  }, [setConnected, setKeypoints]);
+  }, [cleanupCamera, cleanupWebSocket, cleanupIntervals, setCameraError, setConnected, setKeypoints]);
+
+  const startCamera = useCallback(async () => {
+    setCameraError(null);
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      const errorInfo: CameraErrorInfo = {
+        type: 'unknown',
+        message: '您的浏览器不支持摄像头访问',
+        suggestion: '请使用现代浏览器（如 Chrome、Firefox、Edge、Safari）并确保访问的是 HTTPS 或 localhost'
+      };
+      setCameraError(errorInfo.message);
+      toggleCamera(false);
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: true,
+        audio: false
+      });
+
+      streamRef.current = stream;
+
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+
+        await new Promise<void>((resolve, reject) => {
+          if (!videoRef.current) {
+            reject(new Error('Video element not found'));
+            return;
+          }
+
+          videoRef.current.onloadedmetadata = () => {
+            videoRef.current?.play().then(() => {
+              resolve();
+            }).catch(reject);
+          };
+
+          videoRef.current.onerror = () => {
+            reject(new Error('Video element error'));
+          };
+
+          setTimeout(() => {
+            if (videoRef.current && videoRef.current.readyState < 2) {
+              reject(new Error('Video loading timeout'));
+            }
+          }, 5000);
+        });
+      }
+
+      initializeWebSocket();
+    } catch (error) {
+      const errorInfo = getCameraErrorInfo(error as Error);
+      console.error('Camera initialization failed:', errorInfo);
+      setCameraError(errorInfo.message);
+      cleanupCamera();
+      toggleCamera(false);
+    }
+  }, [initializeWebSocket, cleanupCamera, setCameraError, toggleCamera]);
 
   const sendFrame = useCallback(() => {
     if (!videoRef.current || !wsClientRef.current || !isConnected) {
+      return;
+    }
+
+    if (videoRef.current.readyState < 2) {
       return;
     }
 
@@ -169,7 +258,12 @@ export function CameraPreview(_props: CameraPreviewProps): JSX.Element {
     }
 
     const video = videoRef.current;
-    
+
+    if (video.readyState < 2) {
+      animationFrameRef.current = requestAnimationFrame(renderLoop);
+      return;
+    }
+
     if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
@@ -177,7 +271,11 @@ export function CameraPreview(_props: CameraPreviewProps): JSX.Element {
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+    ctx.save();
+    ctx.translate(canvas.width, 0);
+    ctx.scale(-1, 1);
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    ctx.restore();
 
     if (lastKeypoints && clothesImageRef.current && currentClothes) {
       try {
@@ -205,6 +303,8 @@ export function CameraPreview(_props: CameraPreviewProps): JSX.Element {
       startCamera().then(() => {
         frameIntervalRef.current = window.setInterval(sendFrame, FRAME_INTERVAL);
         animationFrameRef.current = requestAnimationFrame(renderLoop);
+      }).catch(() => {
+        stopCamera();
       });
     } else {
       stopCamera();
@@ -225,19 +325,40 @@ export function CameraPreview(_props: CameraPreviewProps): JSX.Element {
           muted
           style={{ display: 'none' }}
         />
-        
+
         <canvas
           ref={canvasRef}
           className={styles.canvasElement}
         />
 
-        {!isCameraActive && (
+        {!isCameraActive && !cameraError && (
           <div className={styles.overlay}>
             点击下方按钮开启摄像头
           </div>
         )}
 
-        {isCameraActive && (
+        {cameraError && (
+          <div className={styles.errorOverlay}>
+            <div className={styles.errorIcon}>⚠️</div>
+            <div className={styles.errorMessage}>{cameraError}</div>
+            <div className={styles.errorSuggestion}>
+              {cameraError.includes('权限') && '请在浏览器设置中允许摄像头权限，然后刷新页面'}
+              {cameraError.includes('占用') && '请关闭其他使用摄像头的应用后刷新重试'}
+              {cameraError.includes('不支持') && '请使用 Chrome、Firefox 等现代浏览器'}
+              {(!cameraError.includes('权限') && !cameraError.includes('占用') && !cameraError.includes('不支持')) && '请检查摄像头连接后刷新页面重试'}
+            </div>
+            <button
+              className={styles.retryButton}
+              onClick={() => {
+                toggleCamera(true);
+              }}
+            >
+              重试
+            </button>
+          </div>
+        )}
+
+        {isCameraActive && !cameraError && (
           <div className={styles.statusBar}>
             <div className={styles.statusItem}>
               <span

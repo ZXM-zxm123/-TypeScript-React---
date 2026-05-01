@@ -54,4 +54,5 @@ export interface AppState {
   clothesList: ClothesItem[];
   lastKeypoints: PoseKeypoints | null;
   isProcessing: boolean;
+  cameraError: string | null;
 }
