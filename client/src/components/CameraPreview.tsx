@@ -285,14 +285,7 @@ export function CameraPreview(): JSX.Element {
           canvas.height,
           clothesImageRef.current
         );
-
-        ctx.save();
-        const centerX = canvas.width / 2;
-        ctx.translate(centerX, 0);
-        ctx.scale(-1, 1);
-        ctx.translate(-centerX, 0);
         drawClothes(ctx, clothesImageRef.current, transform);
-        ctx.restore();
       } catch (error) {
         console.error('Failed to render clothes:', error);
       }
